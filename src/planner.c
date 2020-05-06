@@ -392,7 +392,7 @@ classify_relation(const PlannerInfo *root, const RelOptInfo *rel, Hypertable **p
 	{
 		case RELOPT_BASEREL:
 			rte = planner_rt_fetch(rel->relid, root);
-			ht = get_hypertable(rte->relid, CACHE_FLAG_CHECK);
+			ht = get_hypertable(rte->relid, rte->inh ? CACHE_FLAG_MISSING_OK : CACHE_FLAG_CHECK);
 
 			if (NULL != ht)
 				reltype = TS_REL_HYPERTABLE;
@@ -769,6 +769,23 @@ timescaledb_get_relation_info_hook(PlannerInfo *root, Oid relation_objectid, boo
 	switch (classify_relation(root, rel, &ht))
 	{
 		case TS_REL_HYPERTABLE:
+			{
+				RangeTblEntry *rte = root->simple_rte_array[rel->relid];
+				Query *query = root->parse;
+				/* Mark hypertable RTEs we'd like to expand ourselves
+				 * Hypertables inside inlineable functions don't get marked during the query
+				 * preprocessing step. Therefore we do an extra try here. However, we need to
+				 * be careful for INSERT/UPDATEs as Postgres runs them through the planner as
+				 * a simulated INSERT. We don't want to touch these so we have to check
+				 * rte->requiredPerms if we're requesting an UPDATE/DELETE on this rel.
+				 */
+				if (!ts_guc_disable_optimizations && ts_guc_enable_constraint_exclusion && inhparent && rte->ctename == NULL &&
+					!IS_UPDL_CMD(query) && query->resultRelation == 0 && query->rowMarks == NIL &&
+					(rte->requiredPerms & (ACL_UPDATE | ACL_DELETE)) == 0)
+				{
+					rte_mark_for_expansion(rte);
+				}
+			}
 			ts_create_private_reloptinfo(rel);
 #if PG12_GE
 			/* in earlier versions this is done during expand_hypertable_inheritance() below */
